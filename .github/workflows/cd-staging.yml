@@ -1,0 +1,66 @@
+name: Deploy to Amazon EC2
+
+on:
+  push:
+    branches: [ "staging" ]
+
+env:
+  AWS_REGION: ap-northeast-2
+  ECR_REPOSITORY: backend-staging
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-deploy:
+    name: Build and deploy
+    runs-on: ubuntu-latest
+    environment: staging
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+
+      - name: Setup jdk 17
+        uses: actions/setup-java@v3
+        with:
+          distribution: 'corretto'
+          java-version: '17'
+          cache: 'gradle'
+
+      - name: Add permission to gradlew
+        run: chmod +x ./gradlew
+        shell: bash
+
+      - name: Build spring application
+        run: ./gradlew build --no-daemon -x test
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v1
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v1
+
+      - name: Build, tag, and push image to Amazon ECR
+        id: build-image
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: latest
+        run: |
+          docker build --build-arg JAR_FILE=build/libs/*.jar --build-arg ARG_PROFILE=staging -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+          echo "image=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
+
+      - name: start deploy
+        env:
+          IMAGE_TAG: latest
+        run: |
+          aws deploy create-deployment --application-name trift-backend \
+          --deployment-config-name CodeDeployDefault.OneAtATime \
+          --deployment-group-name dpg-trift-backend-dev \
+          --github-location repository=SWM-14th-JMP/trift_backend,commitId=${{ github.sha }}
